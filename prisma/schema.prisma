@@ -1,0 +1,238 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  user
+  analyst
+  admin
+}
+
+enum ChatRole {
+  user
+  assistant
+  system
+}
+
+enum RequestStatus {
+  success
+  error
+  refused
+  timeout
+}
+
+enum ClassificationStatus {
+  pending
+  processing
+  done
+  failed
+  skipped
+}
+
+enum ModelRole {
+  chat
+  classifier
+  both
+}
+
+model Department {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users                   User[]
+  aiRequests              AiRequest[]
+  dailyStatistics         DailyStatistic[]
+  dailyCategoryStatistics DailyCategoryStatistic[]
+
+  @@map("departments")
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  displayName  String     @map("display_name")
+  departmentId String     @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id])
+  role         UserRole   @default(user)
+  status       String     @default("active")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  chatSessions ChatSession[]
+  aiRequests   AiRequest[]
+
+  @@map("users")
+}
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  messages   ChatMessage[]
+  aiRequests AiRequest[]
+
+  @@index([userId])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id             String      @id @default(cuid())
+  sessionId      String      @map("session_id")
+  session        ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role           ChatRole
+  // 生本文は既定で保存しない（MVPはマスク済のみ）。content は将来の生本文保存オプション用の予約列。
+  contentMasked  String      @map("content_masked")
+  content        String?
+  sequenceNumber Int         @map("sequence_number")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  requestsAsPrompt   AiRequest[] @relation("RequestPromptMessage")
+  requestsAsResponse AiRequest[] @relation("RequestResponseMessage")
+
+  @@index([sessionId, sequenceNumber])
+  @@map("chat_messages")
+}
+
+model AiRequest {
+  id                   String               @id @default(cuid())
+  userId               String               @map("user_id")
+  user                 User                 @relation(fields: [userId], references: [id])
+  departmentId         String               @map("department_id")
+  department           Department           @relation(fields: [departmentId], references: [id])
+  sessionId            String               @map("session_id")
+  session              ChatSession          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  requestMessageId     String?              @map("request_message_id")
+  requestMessage       ChatMessage?         @relation("RequestPromptMessage", fields: [requestMessageId], references: [id])
+  responseMessageId    String?              @map("response_message_id")
+  responseMessage      ChatMessage?         @relation("RequestResponseMessage", fields: [responseMessageId], references: [id])
+  provider             String
+  model                String
+  isLocal              Boolean              @default(true) @map("is_local")
+  // マスク済のスナップショット。会話編集/削除後もログ指標としては残す。
+  promptMasked         String               @map("prompt_masked")
+  responseMasked       String?              @map("response_masked")
+  inputTokens          Int?                 @map("input_tokens")
+  outputTokens         Int?                 @map("output_tokens")
+  estimatedCost        Decimal?             @map("estimated_cost") @db.Decimal(10, 6)
+  latencyMs            Int?                 @map("latency_ms")
+  status               RequestStatus
+  errorCode            String?              @map("error_code")
+  errorMessage         String?              @map("error_message")
+  classificationStatus ClassificationStatus @default(pending) @map("classification_status")
+  retryCount           Int                  @default(0) @map("retry_count")
+  nextAttemptAt        DateTime?            @map("next_attempt_at")
+  createdAt            DateTime             @default(now()) @map("created_at")
+
+  classification RequestClassification?
+
+  @@index([createdAt])
+  @@index([departmentId, createdAt])
+  @@index([userId, createdAt])
+  @@index([classificationStatus, nextAttemptAt])
+  @@map("ai_requests")
+}
+
+model RequestClassification {
+  id                    String    @id @default(cuid())
+  requestId             String    @unique @map("request_id")
+  request               AiRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  businessCategory      String    @map("business_category")
+  usagePurpose          String    @map("usage_purpose")
+  taskType              String    @map("task_type")
+  improvementType       String    @map("improvement_type")
+  automationPotential   String    @map("automation_potential")
+  ragCandidate          Boolean   @map("rag_candidate")
+  sensitivityLevel      String    @map("sensitivity_level")
+  confidence            Decimal   @db.Decimal(3, 2)
+  classifierProvider    String    @map("classifier_provider")
+  classifierModel       String    @map("classifier_model")
+  classificationVersion String    @map("classification_version")
+  rawResult             Json      @map("raw_result")
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  @@index([businessCategory])
+  @@index([ragCandidate])
+  @@index([automationPotential])
+  @@map("request_classifications")
+}
+
+model CategoryOption {
+  id        String   @id @default(cuid())
+  dimension String
+  value     String
+  label     String
+  sortOrder Int      @default(0) @map("sort_order")
+  enabled   Boolean  @default(true)
+  version   Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([dimension, value])
+  @@map("category_options")
+}
+
+model ModelSetting {
+  id              String    @id @default(cuid())
+  provider        String
+  modelName       String    @map("model_name")
+  displayName     String    @map("display_name")
+  baseUrl         String    @map("base_url")
+  // 鍵本体は保存しない。読み取るべき環境変数名のみを保持する。
+  apiKeyRef       String?   @map("api_key_ref")
+  enabled         Boolean   @default(true)
+  isLocal         Boolean   @default(true) @map("is_local")
+  inputCostPer1k  Decimal?  @map("input_cost_per_1k") @db.Decimal(10, 6)
+  outputCostPer1k Decimal?  @map("output_cost_per_1k") @db.Decimal(10, 6)
+  role            ModelRole @default(chat)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("model_settings")
+}
+
+// 部署ごとの日次集計。全社合計はクエリ時に部署横断でSUMする(NULL部署の特別行は持たない)。
+model DailyStatistic {
+  id               String     @id @default(cuid())
+  aggregationDate  DateTime   @map("aggregation_date") @db.Date
+  departmentId     String     @map("department_id")
+  department       Department @relation(fields: [departmentId], references: [id])
+  requestCount     Int        @default(0) @map("request_count")
+  activeUserCount  Int        @default(0) @map("active_user_count")
+  inputTokens      Int        @default(0) @map("input_tokens")
+  outputTokens     Int        @default(0) @map("output_tokens")
+  estimatedCost    Decimal    @default(0) @map("estimated_cost") @db.Decimal(10, 4)
+  averageLatencyMs Int?       @map("average_latency_ms")
+  errorCount       Int        @default(0) @map("error_count")
+  createdAt        DateTime   @default(now()) @map("created_at")
+
+  @@unique([aggregationDate, departmentId])
+  @@map("daily_statistics")
+}
+
+model DailyCategoryStatistic {
+  id              String     @id @default(cuid())
+  aggregationDate DateTime   @map("aggregation_date") @db.Date
+  departmentId    String     @map("department_id")
+  department      Department @relation(fields: [departmentId], references: [id])
+  dimension       String
+  value           String
+  count           Int        @default(0)
+  createdAt       DateTime   @default(now()) @map("created_at")
+
+  @@unique([aggregationDate, departmentId, dimension, value])
+  @@map("daily_category_statistics")
+}

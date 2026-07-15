@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_usalysis}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-ai_usalysis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-ai_usalysis}
+      SESSION_SECRET: ${SESSION_SECRET}
+      LLM_CHAT_BASE_URL: ${LLM_CHAT_BASE_URL:-http://host.docker.internal:8080/v1}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-gemma-4-12b-it-Q4_K_M.gguf}
+      LLM_CLASSIFIER_BASE_URL: ${LLM_CLASSIFIER_BASE_URL:-http://host.docker.internal:8081/v1}
+      LLM_CLASSIFIER_MODEL: ${LLM_CLASSIFIER_MODEL:-gemma-3-4b-it-q4_0.gguf}
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-ai_usalysis}
+      LLM_CLASSIFIER_BASE_URL: ${LLM_CLASSIFIER_BASE_URL:-http://host.docker.internal:8081/v1}
+      LLM_CLASSIFIER_MODEL: ${LLM_CLASSIFIER_MODEL:-gemma-3-4b-it-q4_0.gguf}
+
+volumes:
+  db_data:
